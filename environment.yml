@@ -1,0 +1,35 @@
+name: ducktape
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - r-base=4.3
+  - pandas[version='>=2.0,<3']
+  - numpy[version='>=1.24']
+  - scipy[version='>=1.10']
+  - pybigwig
+  - bioconda::deeptools==4.0.0
+  - samtools
+  - bedtools
+  - stringtie
+  - subread
+  - gffread
+  - gffcompare
+  - ucsc-bigwigtobedgraph
+  - r-optparse
+  - r-data.table
+  - r-pbmcapply
+  - r-rocr
+  - r-dplyr
+  - r-openxlsx
+  - bioconductor-deseq2
+  - bioconductor-genomicranges
+  - bioconductor-rtracklayer
+  - bioconductor-iranges
+  - bioconductor-s4vectors
+  - bioconda::agat
+  - perl-file-sharedir[build=pl5321*]
+  - perl-file-sharedir-install[build=pl5321*]
+  - perl-class-inspector[build=pl5321*]
+  - perl-error
