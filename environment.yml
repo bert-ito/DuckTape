@@ -12,7 +12,7 @@ dependencies:
   - bioconda::deeptools==4.0.0
   - samtools
   - bedtools
-  - stringtie
+  - stringtie=2.1.7
   - subread
   - gffread
   - gffcompare
