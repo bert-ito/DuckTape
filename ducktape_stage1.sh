@@ -12,6 +12,9 @@
 # Defaults
 ############################################################
 
+# Start time, for the stage resource usage summary
+BENCH_T_START=${EPOCHREALTIME:-$(date +%s.%N)}
+
 CONDA_ENV=""
 PIPELINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts"
 
@@ -19,6 +22,8 @@ THREADS_OVERRIDE=""
 MEM_GB_OVERRIDE=""
 TEST_EXPRESSION="20"
 QUERY_FRACTION="0.05"
+BENCH_ON=1
+BENCH_INTERVAL=1
 ANNOT_FILES=()
 
 ############################################################
@@ -83,6 +88,13 @@ Optional arguments
         If the test gene is the lower-expressed gene, the roles
         are swapped. Default: 0.05
 
+  --no-benchmark
+        Do not record resource usage (CPU, memory, I/O)
+
+  --benchmark-interval SEC
+        Memory sampling interval for the resource usage tables
+        Default: 1
+
   -h, --help
         Show this help message and exit
 
@@ -97,6 +109,8 @@ Outputs
   TEST_KNOWNPAIRS_expression_filtered.bed         Test genes of the known pairs
   TEST_KNOWNPAIRS_QUERY_expression_filtered.bed   Query genes of the known pairs
   reference_test.gff3                             annotation.gff3 without the query genes
+  benchmark/steps.tsv                             Resource usage per step and for the stage
+  benchmark/commands.tsv                          Resource usage per command
 
 Examples
 --------
@@ -131,6 +145,9 @@ while [[ $# -gt 0 ]]; do
         --pipeline-dir)     PIPELINE_DIR="$2";   shift 2 ;;
         --test-expression)  TEST_EXPRESSION="$2"; shift 2 ;;
         --query-fraction)   QUERY_FRACTION="$2";  shift 2 ;;
+        --no-benchmark)     BENCH_ON=0;           shift ;;
+        --benchmark-interval)
+                            BENCH_INTERVAL="$2";  shift 2 ;;
         *)                  echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -168,9 +185,11 @@ step_start() {
     local pad=$(( 68 - ${#STEP_NAME} ))
     (( pad > 0 )) && printf '%.0s─' $(seq 1 $pad)
     printf '\n'
+    bench_step_begin
 }
 
 step_end() {
+    bench_step_end
     local dt=$(( $(date +%s) - STEP_T0 ))
     printf '     done in %s\n' "$(fmt_time "$dt")"
     TIMINGS+=("$(printf '%-46s %s' "[$(printf '%02d' $STEP_N)] $STEP_NAME" "$(fmt_time "$dt")")")
@@ -206,6 +225,10 @@ esac
 awk -v x="$QUERY_FRACTION" \
     'BEGIN { exit !(x ~ /^[0-9]+([.][0-9]+)?$/ && x >= 0 && x <= 1) }' \
     || die "--query-fraction must be a number between 0 and 1"
+
+awk -v x="$BENCH_INTERVAL" \
+    'BEGIN { exit !(x ~ /^[0-9]+([.][0-9]+)?$/ && x > 0) }' \
+    || die "--benchmark-interval must be a positive number"
 
 mkdir -p "$OUTDIR"
 
@@ -307,9 +330,15 @@ fi
 ############################################################
 
 NASTI_R="$PIPELINE_DIR/nastiseq_pipeline.R"
+BENCH_LIB="$PIPELINE_DIR/benchmark.sh"
 
-[[ -f "$NASTI_R" ]] || die "helper script not found: $NASTI_R
+for f in "$NASTI_R" "$BENCH_LIB" "$PIPELINE_DIR/ducktape_bench.py"; do
+    [[ -f "$f" ]] || die "helper script not found: $f
        Set --pipeline-dir to the directory containing it."
+done
+
+BENCH_STAGE="stage1"
+source "$BENCH_LIB"
 
 
 ############################################################
@@ -397,6 +426,7 @@ export TMP LOGS COUNTS
 export FC_SENSE FC_ANTI
 export NASTI_R
 
+bench_init
 
 ############################################################
 # STEP 1 - Prepare annotation with AGAT + gffread
@@ -425,7 +455,7 @@ for a in "${ANNOT_FILES[@]}"; do
     if [[ "$a" == *.gz ]]; then
         src="$TMP/agat_input_${idx}.gff"
         log "Decompressing annotation: $(basename "$a")"
-        gzip -cd "$a" > "$src" \
+        bench "gzip ${a##*/}" gzip -cd "$a" > "$src" \
             || die "could not decompress annotation: $a"
     fi
 
@@ -433,7 +463,7 @@ for a in "${ANNOT_FILES[@]}"; do
 
     log "AGAT preprocessing [$idx/${#ANNOT_FILES[@]}]: $(basename "$a")"
 
-    agat_convert_sp_gxf2gxf.pl \
+    bench "agat_convert_sp_gxf2gxf.pl ${a##*/}" agat_convert_sp_gxf2gxf.pl \
         --g "$src" \
         --output "$out" \
         --cpu "${THREADS}" \
@@ -460,7 +490,7 @@ else
         MERGE_ARGS+=(--gff "$f")
     done
 
-    agat_sp_merge_annotations.pl \
+    bench "agat_sp_merge_annotations.pl" agat_sp_merge_annotations.pl \
         "${MERGE_ARGS[@]}" \
         --out "$ANNOT" \
         --cpu "${THREADS}" \
@@ -479,7 +509,7 @@ GTF="$OUTDIR/reference.gtf"
 
 log "Converting normalized GFF3 to GTF"
 
-gffread "$ANNOT" -T --keep-genes -o "$GTF" \
+bench "gffread GFF3 to GTF" gffread "$ANNOT" -T --keep-genes -o "$GTF" \
     >"$LOGS/gffread_gtf.log" 2>&1 \
     || die "gffread failed building reference GTF"
 
@@ -488,7 +518,7 @@ gffread "$ANNOT" -T --keep-genes -o "$GTF" \
 log "Converting GTF back to GFF3"
 
 # Without -T, gffread writes GFF3 output.
-gffread "$GTF" --keep-genes -o "$ANNOT" \
+bench "gffread GTF to GFF3" gffread "$GTF" --keep-genes -o "$ANNOT" \
     >"$LOGS/gffread_gff.log" 2>&1 \
     || die "gffread failed building reference GFF3"
 
@@ -560,13 +590,13 @@ fc_one() {
     [[ -n "${FC_PAIRED_STR:-}" ]] &&
         read -r -a paired <<< "$FC_PAIRED_STR"
 
-    featureCounts -T "$FC_THREADS" -a "$GTF" \
+    bench "featureCounts sense ${sample}" featureCounts -T "$FC_THREADS" -a "$GTF" \
         -o "$COUNTS/${sample}.sense.txt" \
         -g gene_id -t exon -s "$FC_SENSE" \
         "${paired[@]}" -O "$bam" \
         > "$LOGS/featureCounts_${sample}_sense.log" 2>&1
 
-    featureCounts -T "$FC_THREADS" -a "$GTF" \
+    bench "featureCounts antisense ${sample}" featureCounts -T "$FC_THREADS" -a "$GTF" \
         -o "$COUNTS/${sample}.antisense.txt" \
         -g gene_id -t exon -s "$FC_ANTI" \
         "${paired[@]}" -O "$bam" \
@@ -607,7 +637,7 @@ step_end
 
 step_start "NASTIseq known-pairs creation"
 
-Rscript "$NASTI_R" \
+bench "NASTIseq" Rscript "$NASTI_R" \
     -i "$COUNTS" \
     -g "$GTF" \
     -c "$THREADS" \
@@ -680,7 +710,7 @@ END {
 TEST_KNOWNPAIRS="$OUTDIR/TEST_KNOWNPAIRS_expression_filtered.bed"
 TEST_KNOWNPAIRS_QUERY="$OUTDIR/TEST_KNOWNPAIRS_QUERY_expression_filtered.bed"
 
-python - \
+bench "known_pairs_filter (inline python)" python - \
     "$EXPR_TABLE" \
     "$PAIR_TEST_ORIGINAL" \
     "$PAIR_QUERY_ORIGINAL" \
@@ -806,7 +836,7 @@ step_start "Creating reference_test.gff3"
 
 REFERENCE_TEST="$OUTDIR/reference_test.gff3"
 
-python - \
+bench "reference_test_builder (inline python)" python - \
     "$ANNOT" \
     "$TEST_KNOWNPAIRS_QUERY" \
     "$REFERENCE_TEST" <<'PYCODE'
@@ -956,5 +986,4 @@ log "  TEST_KNOWNPAIRS_QUERY_expression_filtered.bed"
 log "  reference_test.gff3"
 rule
 
-
-
+bench_stage_end

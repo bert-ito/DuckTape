@@ -14,6 +14,9 @@
 # Defaults
 ############################################################
 
+# Start time, for the stage resource usage summary
+BENCH_T_START=${EPOCHREALTIME:-$(date +%s.%N)}
+
 ORPHAN_BUFFER=10000
 ALPHA_FACTOR=4
 INTERSECT_FRAC=0.2
@@ -26,6 +29,8 @@ PIPELINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts"
 
 THREADS_OVERRIDE=""
 MEM_GB_OVERRIDE=""
+BENCH_ON=1
+BENCH_INTERVAL=1
 
 ANNOT_FILES=()
 
@@ -112,6 +117,13 @@ Optional arguments
         Directory containing the helper scripts
         Default: scripts/ next to this script
 
+  --no-benchmark
+        Do not record resource usage (CPU, memory, I/O)
+
+  --benchmark-interval SEC
+        Memory sampling interval for the resource usage tables
+        Default: 1
+
   -h, --help
         Show this help message and exit
 
@@ -128,6 +140,10 @@ Outputs
     test_knownpairs.bed     Test genes used as targets
     NAT_tracking_x.tsv      gffcompare antisense (class code x) assignments
     final_queries.stats     gffcompare accuracy against the query genes
+
+  both modes:
+    benchmark/steps.tsv     Resource usage per step and for the stage
+    benchmark/commands.tsv  Resource usage per command
 
 Examples
 --------
@@ -186,6 +202,9 @@ do
         --mem-gb)           MEM_GB_OVERRIDE="$2";  shift 2 ;;
         --env)              CONDA_ENV="$2";      shift 2 ;;
         --pipeline-dir)     PIPELINE_DIR="$2";   shift 2 ;;
+        --no-benchmark)     BENCH_ON=0;          shift ;;
+        --benchmark-interval)
+                            BENCH_INTERVAL="$2"; shift 2 ;;
         *)                  echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -223,9 +242,11 @@ step_start() {
     local pad=$(( 68 - ${#STEP_NAME} ))
     (( pad > 0 )) && printf '%.0s─' $(seq 1 $pad)
     printf '\n'
+    bench_step_begin
 }
 
 step_end() {
+    bench_step_end
     local dt=$(( $(date +%s) - STEP_T0 ))
     printf '     done in %s\n' "$(fmt_time "$dt")"
     TIMINGS+=("$(printf '%-46s %s' "[$(printf '%02d' $STEP_N)] $STEP_NAME" "$(fmt_time "$dt")")")
@@ -260,6 +281,10 @@ case "$MODE" in
     analysis|test) ;;
     *) die "--mode must be analysis or test" ;;
 esac
+
+awk -v x="$BENCH_INTERVAL" \
+    'BEGIN { exit !(x ~ /^[0-9]+([.][0-9]+)?$/ && x > 0) }' \
+    || die "--benchmark-interval must be a positive number"
 
 mkdir -p "$OUTDIR"
 
@@ -378,12 +403,16 @@ TOTAL_ALPHA="$PIPELINE_DIR/total_alpha.py"
 PEARSON="$PIPELINE_DIR/pearson_alpha.py"
 ALPHA="$PIPELINE_DIR/calculate_alpha.py"
 REMOVE="$PIPELINE_DIR/remove_alpha.py"
+BENCH_LIB="$PIPELINE_DIR/benchmark.sh"
 for f in "$ISOLATE" "$TOTAL_ALPHA" "$PEARSON" \
-         "$ALPHA" "$REMOVE"
+         "$ALPHA" "$REMOVE" "$BENCH_LIB" "$PIPELINE_DIR/ducktape_bench.py"
 do
     [[ -f "$f" ]] || die "helper script not found: $f
        Set --pipeline-dir to the directory containing them."
 done
+
+BENCH_STAGE="stage2"
+source "$BENCH_LIB"
 
 
 ############################################################
@@ -567,6 +596,8 @@ export FC_SENSE FC_ANTI BW_PLUS BW_MINUS PLUS_EXPR MINUS_EXPR
 export INTERSECT_FRAC ALPHA_FACTOR
 export ISOLATE TOTAL_ALPHA PEARSON ALPHA REMOVE
 
+bench_init
+
 ############################################################
 # Reuse completed Stage 1 outputs (no annotation prep, featureCounts,
 # or NASTIseq rerun)
@@ -608,9 +639,11 @@ TARGET_GFF="$TMP/target.gff3"
 
 case "$TARGET_CLASS" in
     all)       cp "$ANNOT" "$TARGET_GFF" ;;
-    coding)    gffread "$ANNOT" -C  --keep-genes -o "$TARGET_GFF" \
+    coding)    bench "gffread coding targets" \
+                   gffread "$ANNOT" -C  --keep-genes -o "$TARGET_GFF" \
                    >"$LOGS/gffread_target.log" 2>&1 ;;
-    noncoding) gffread "$ANNOT" --nc --keep-genes -o "$TARGET_GFF" \
+    noncoding) bench "gffread noncoding targets" \
+                   gffread "$ANNOT" --nc --keep-genes -o "$TARGET_GFF" \
                    >"$LOGS/gffread_target.log" 2>&1 ;;
 esac
 
@@ -662,7 +695,7 @@ step_end
 
 step_start "Estimating antisense leakage (alpha)"
 
-python "$ISOLATE" -i "$ANNOT" -b 200 -o "$TMP/isolated.txt" \
+bench "isolate_gff3.py" python "$ISOLATE" -i "$ANNOT" -b 200 -o "$TMP/isolated.txt" \
     > "$LOGS/isolate.log" 2>&1 || die "isolate_gff3.py failed"
 
 grep -Fvxf "$TMP/orphan_ids.txt" "$TMP/isolated.txt" \
@@ -689,7 +722,7 @@ alpha_one() {
     subset_counts "$TMP/isolated_no_orphans.txt" \
         "$COUNTS/${sample}.antisense.txt" \
         "$ISOLATED_COUNTS/${sample}.antisense.isolated.txt"
-    python "$ALPHA" \
+    bench "calculate_alpha.py ${sample}" python "$ALPHA" \
         -s "$ISOLATED_COUNTS/${sample}.sense.isolated.txt" \
         -a "$ISOLATED_COUNTS/${sample}.antisense.isolated.txt" \
         -m 50 -r 0.5 \
@@ -736,13 +769,13 @@ merge_fc "$TOTAL_ISOLATED_COUNTS/merged.sense.isolated.txt" \
 merge_fc "$TOTAL_ISOLATED_COUNTS/merged.antisense.isolated.txt" \
          "$ISOLATED_COUNTS"/*.antisense.isolated.txt
 
-python "$TOTAL_ALPHA" \
+bench "total_alpha.py" python "$TOTAL_ALPHA" \
     --sense     "$TOTAL_ISOLATED_COUNTS/merged.sense.isolated.txt" \
     --antisense "$TOTAL_ISOLATED_COUNTS/merged.antisense.isolated.txt" \
     --output    "$CORRELATION/alpha_median_vs_expression.tsv" \
     > "$LOGS/total_alpha.log" 2>&1 || die "total_alpha.py failed"
 
-python "$PEARSON" \
+bench "pearson_alpha.py" python "$PEARSON" \
     --input  "$CORRELATION/alpha_median_vs_expression.tsv" \
     --output "$CORRELATION/expression_alpha_correlation.txt" \
     > "$LOGS/pearson.log" 2>&1 || die "pearson_alpha.py failed"
@@ -768,11 +801,14 @@ log "$SCHED_CONC concurrent jobs x $BAM_THREADS threads (${BAM_MEM}M/thread sort
 
 restrict_one() {
     local sample="$1"
-    samtools view -@ "$BAM_THREADS" -b \
+    bench "samtools view restrict ${sample}" \
+        samtools view -@ "$BAM_THREADS" -b \
         -L "$TMP/target_orphans_rev.bed" "$BAM_DIR/${sample}.bam" \
-    | samtools sort -@ "$BAM_THREADS" -m "${BAM_MEM}M" \
+    | bench "samtools sort restrict ${sample}" \
+        samtools sort -@ "$BAM_THREADS" -m "${BAM_MEM}M" \
         -T "$TMP/sort_${sample}" -o "$REST_BAMS/${sample}.bam" -
-    samtools index -@ "$BAM_THREADS" "$REST_BAMS/${sample}.bam"
+    bench "samtools index restrict ${sample}" \
+        samtools index -@ "$BAM_THREADS" "$REST_BAMS/${sample}.bam"
 }
 export -f restrict_one
 
@@ -792,11 +828,11 @@ log "bamCoverage: $SCHED_CONC concurrent jobs x $BW_THREADS threads"
 
 coverage_one() {
     local sample="$1"
-    bamCoverage -b "$REST_BAMS/${sample}.bam" \
+    bench "bamCoverage forward ${sample}" bamCoverage -b "$REST_BAMS/${sample}.bam" \
         --filterRNAstrand "$BW_PLUS" --binSize 50 -p "$BW_THREADS" \
         -o "$BW/${sample}.forward.bw" \
         > "$LOGS/bamCoverage_${sample}_fwd.log" 2>&1
-    bamCoverage -b "$REST_BAMS/${sample}.bam" \
+    bench "bamCoverage reverse ${sample}" bamCoverage -b "$REST_BAMS/${sample}.bam" \
         --filterRNAstrand "$BW_MINUS" --binSize 50 -p "$BW_THREADS" \
         -o "$BW/${sample}.reverse.bw" \
         > "$LOGS/bamCoverage_${sample}_rev.log" 2>&1
@@ -813,7 +849,7 @@ correct_one() {
     local a f
     a=$(cat "$ALPHA_DIR/${sample}.alpha.txt")
     f=$(awk -v a="$a" -v k="$ALPHA_FACTOR" 'BEGIN{print a*k}')
-    python "$REMOVE" \
+    bench "remove_alpha.py ${sample}" python "$REMOVE" \
         -p  "$BW/${sample}.forward.bw" \
         -m  "$BW/${sample}.reverse.bw" \
         -op "$BW_CORR/${sample}.forward.bw" \
@@ -844,29 +880,34 @@ peaks_one() {
     local out="$PEAKDIR/${sample}.bed"
     : > "$out"
 
-    bigWigToBedGraph "$BW_CORR/${sample}.forward.bw" stdout \
+    bench "bigWigToBedGraph forward ${sample}" \
+        bigWigToBedGraph "$BW_CORR/${sample}.forward.bw" stdout \
       | awk '$4>10' \
-      | sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
-      | bedtools merge -i - \
+      | bench "sort peaks forward ${sample}" \
+        sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
+      | bench "bedtools merge peaks forward ${sample}" bedtools merge -i - \
       | awk 'BEGIN{OFS="\t"}{print $1,$2,$3,".",".","+"}' >> "$out"
 
-    bigWigToBedGraph "$BW_CORR/${sample}.reverse.bw" stdout \
+    bench "bigWigToBedGraph reverse ${sample}" \
+        bigWigToBedGraph "$BW_CORR/${sample}.reverse.bw" stdout \
       | awk '$4>10' \
-      | sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
-      | bedtools merge -i - \
+      | bench "sort peaks reverse ${sample}" \
+        sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
+      | bench "bedtools merge peaks reverse ${sample}" bedtools merge -i - \
       | awk 'BEGIN{OFS="\t"}{print $1,$2,$3,".",".","-"}' >> "$out"
 }
 export -f peaks_one
 run_parallel peaks_one "${SAMPLES[@]}" || die "peak calling failed"
 
-cat "$PEAKDIR"/*.bed | sort -k1,1 -k2,2n "${SORT_OPTS[@]}" \
+cat "$PEAKDIR"/*.bed | bench "sort all peaks" sort -k1,1 -k2,2n "${SORT_OPTS[@]}" \
     > "$TMP/all_peaks.sorted.bed"
 
-bedtools merge -i "$TMP/all_peaks.sorted.bed" -s -c 6 -o distinct \
+bench "bedtools merge all peaks" \
+    bedtools merge -i "$TMP/all_peaks.sorted.bed" -s -c 6 -o distinct \
   | awk 'BEGIN{OFS="\t"}{print $1,$2,$3,".",".",$4}' \
   > "$TMP/merged_peaks.bed"
 
-bedtools intersect \
+bench "bedtools intersect consensus peaks" bedtools intersect \
     -a "$TMP/merged_peaks.bed" \
     -b "$TMP/target_orphans_rev.bed" \
     -s -f 0.1 \
@@ -896,17 +937,22 @@ extract_one() {
 
     # One pass per strand using a filter expression, replacing the
     # previous two view calls + samtools cat per strand.
-    samtools view -@ "$EXTRACT_THREADS" -b -e "$PLUS_EXPR" \
+    bench "samtools view plus ${sample}" \
+        samtools view -@ "$EXTRACT_THREADS" -b -e "$PLUS_EXPR" \
         "$REST_BAMS/${sample}.bam" > "$sd/plus.bam"
-    samtools view -@ "$EXTRACT_THREADS" -b -e "$MINUS_EXPR" \
+    bench "samtools view minus ${sample}" \
+        samtools view -@ "$EXTRACT_THREADS" -b -e "$MINUS_EXPR" \
         "$REST_BAMS/${sample}.bam" > "$sd/minus.bam"
 
-    bedtools intersect -abam "$sd/plus.bam"  -b "$TMP/plus.bed" \
+    bench "bedtools intersect plus ${sample}" \
+        bedtools intersect -abam "$sd/plus.bam"  -b "$TMP/plus.bed" \
         -f "$INTERSECT_FRAC" > "$sd/plus_hits.bam"
-    bedtools intersect -abam "$sd/minus.bam" -b "$TMP/minus.bed" \
+    bench "bedtools intersect minus ${sample}" \
+        bedtools intersect -abam "$sd/minus.bam" -b "$TMP/minus.bed" \
         -f "$INTERSECT_FRAC" > "$sd/minus_hits.bam"
 
-    samtools cat -o "$sd/all.bam" "$sd/plus_hits.bam" "$sd/minus_hits.bam"
+    bench "samtools cat ${sample}" \
+        samtools cat -o "$sd/all.bam" "$sd/plus_hits.bam" "$sd/minus_hits.bam"
 
     # Free intermediates as soon as they are consumed
     rm -f "$sd/plus.bam" "$sd/minus.bam" "$sd/plus_hits.bam" "$sd/minus_hits.bam"
@@ -935,14 +981,17 @@ MERGE_MEM=$(( MEM_USABLE_MB / (MERGE_THREADS > 0 ? MERGE_THREADS : 1) ))
 
 log "samtools merge/sort: $MERGE_THREADS threads, ${MERGE_MEM}M per thread"
 
-samtools merge -f -@ "$MERGE_THREADS" -b "$MERGELIST" "$ASSEMBLY/all.bam"
-samtools sort  -@ "$MERGE_THREADS" -m "${MERGE_MEM}M" -T "$TMP/sort_all" \
+bench "samtools merge all samples" \
+    samtools merge -f -@ "$MERGE_THREADS" -b "$MERGELIST" "$ASSEMBLY/all.bam"
+bench "samtools sort merged" \
+    samtools sort  -@ "$MERGE_THREADS" -m "${MERGE_MEM}M" -T "$TMP/sort_all" \
     -o "$ASSEMBLY/all.sorted.bam" "$ASSEMBLY/all.bam"
-samtools index -@ "$MERGE_THREADS" "$ASSEMBLY/all.sorted.bam"
+bench "samtools index merged" \
+    samtools index -@ "$MERGE_THREADS" "$ASSEMBLY/all.sorted.bam"
 rm -f "$ASSEMBLY/all.bam"
 
 log "stringtie: $THREADS threads ($ST_STRAND)"
-stringtie "$ASSEMBLY/all.sorted.bam" \
+bench "stringtie" stringtie "$ASSEMBLY/all.sorted.bam" \
     "$ST_STRAND" --conservative -p "$THREADS" \
     -o "$ASSEMBLY/assembly.gtf" \
     > "$LOGS/stringtie.log" 2>&1 || die "stringtie failed"
@@ -956,7 +1005,8 @@ step_end
 
 step_start "Identifying antisense transcripts (gffcompare)"
 
-gffcompare -r "$TMP/target_orphans.gff3" "$ASSEMBLY/assembly.gtf" \
+bench "gffcompare against targets" \
+    gffcompare -r "$TMP/target_orphans.gff3" "$ASSEMBLY/assembly.gtf" \
     -o "$ASSEMBLY/orphan" > "$LOGS/gffcompare_1.log" 2>&1
 
 awk -F'\t' '$4=="x"{split($5,a,"|"); print a[2]}' \
@@ -971,7 +1021,8 @@ match($0,/transcript_id "[^"]+"/){
 
 log "round 1 antisense transcripts: $(wc -l < "$TMP/x1.txt")"
 
-gffcompare -r "$ANNOT" "$TMP/nats_round1.gtf" \
+bench "gffcompare against annotation" \
+    gffcompare -r "$ANNOT" "$TMP/nats_round1.gtf" \
     -o "$ASSEMBLY/final" > "$LOGS/gffcompare_2.log" 2>&1
 
 awk -F'\t' '$4=="x"{split($5,a,"|"); print a[2]}' \
@@ -1095,7 +1146,7 @@ if [[ "$MODE" == "test" ]]; then
     cp "$OUTDIR/FINAL_QUERY.gtf" "$FINAL_QUERIES"
 
     # Compare the final NATs against the query reference annotation.
-    gffcompare \
+    bench "gffcompare against queries" gffcompare \
         -r "$QUERY_ANNOT" \
         "$FINAL_QUERIES" \
         -o "$FINAL_TRACKINGS/final_queries" \
@@ -1147,6 +1198,8 @@ fi
 printf '  output directory : %s\n' "$OUTDIR"
 printf '  tool logs        : %s\n' "$LOGS"
 printf '  elapsed time     : %s\n' "$(fmt_time "$TOTAL")"
+rule
+bench_stage_end
 rule
 printf 'Finished.\n'
 

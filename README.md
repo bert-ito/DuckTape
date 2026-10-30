@@ -103,6 +103,8 @@ bash ducktape_stage2.sh \
 | `--mem-gb INT` | available memory | Memory budget in GB. |
 | `--env NAME\|PATH` | current environment | Conda environment to activate. |
 | `--pipeline-dir DIR` | `scripts/` | Location of the helper scripts. |
+| `--no-benchmark` | | Do not record [resource usage](#resource-usage). |
+| `--benchmark-interval SEC` | `1` | Memory sampling interval for the resource usage tables. |
 
 ### Outputs
 
@@ -116,6 +118,7 @@ bash ducktape_stage2.sh \
 | `TEST_KNOWNPAIRS_expression_filtered.bed` | Test genes of the expression-filtered known pairs. |
 | `TEST_KNOWNPAIRS_QUERY_expression_filtered.bed` | Query genes of the same pairs, in the same order. |
 | `reference_test.gff3` | `annotation.gff3` without the query genes, used by Stage 2 test mode. |
+| `benchmark/` | [Resource usage](#resource-usage) per step and per command. |
 | `tmp_work/` | Intermediate files and logs, including the full NASTIseq results. |
 
 ## Stage 2
@@ -138,6 +141,8 @@ bash ducktape_stage2.sh \
 | `--mem-gb INT` | available memory | Memory budget in GB. |
 | `--env NAME\|PATH` | current environment | Conda environment to activate. |
 | `--pipeline-dir DIR` | `scripts/` | Location of the helper scripts. |
+| `--no-benchmark` | | Do not record [resource usage](#resource-usage). |
+| `--benchmark-interval SEC` | `1` | Memory sampling interval for the resource usage tables. |
 
 ### Outputs
 
@@ -149,7 +154,56 @@ bash ducktape_stage2.sh \
 | `test_knownpairs.bed` | test | Test genes used as targets. |
 | `final_queries.stats` | test | gffcompare accuracy of `FINAL_QUERY.gtf` against the removed query genes. |
 | `NAT_tracking_x.tsv` | both | gffcompare tracking lines (class code `x`) linking each NAT to its sense gene. |
+| `benchmark/` | both | [Resource usage](#resource-usage) per step and per command. |
 | `tmp_work/` | both | Intermediate files and tool logs. This can be large and may be deleted once the run is checked. |
+
+## Resource usage
+
+Both stages record the elapsed time, CPU time, memory and I/O of every step, and of every
+tool call within it: featureCounts, NASTIseq, bamCoverage, samtools, bedtools, StringTie,
+gffcompare, AGAT, gffread and the helper scripts. The figures include every process a tool
+starts, such as the forked R workers inside NASTIseq. A summary per step and per tool is
+printed at the end of each stage, and the full tables are written to `<output>/benchmark/`:
+
+| File | Contents |
+|---|---|
+| `steps.tsv` | One row per step, plus a `TOTAL` row covering the whole stage from start to finish. |
+| `commands.tsv` | One row per tool call, with its step, tool name, exit status and full command line. |
+
+| Column | Meaning |
+|---|---|
+| `wall_s` | Elapsed time, in seconds. |
+| `cpu_user_s`, `cpu_sys_s`, `cpu_s` | CPU time in user mode, in kernel mode, and in total, in seconds. |
+| `avg_cores` | `cpu_s / wall_s`: the average number of CPUs kept busy. |
+| `peak_mem_mb` | Peak memory of all processes together, as the sum of their PSS. PSS shares out pages used by several processes, so this is the figure to base memory requests on. |
+| `peak_rss_mb` | The same peak, summing RSS instead. Shared pages are counted once per process, so this is an upper bound. |
+| `max_rss_mb` | Peak RSS of the largest single process. |
+| `read_mb`, `write_mb` | Data read and written, including pipes and cached files. |
+| `disk_read_mb`, `disk_write_mb` | Data read from and written to storage. May be 0 on network file systems. |
+| `max_procs`, `max_threads` | Most processes and threads running at the same time. |
+
+`commands.tsv` also reports major page faults and voluntary and involuntary context switches.
+Memory is in MB (1 MB = 2<sup>20</sup> bytes).
+
+**How it is measured.** CPU time, `max_rss_mb`, page faults and context switches come from the
+Linux kernel's accounting for each command and all of its child processes, so they are exact.
+I/O comes from `/proc/<pid>/io`. The memory totals are sampled from `/proc` every
+`--benchmark-interval` seconds, so a peak shorter than the interval can be missed. For commands
+shorter than the interval, `peak_mem_mb` falls back to `max_rss_mb`. Commands too small to list
+individually (`awk`, `cut`, `grep`) are still included in the step and stage totals. Monitoring
+requires Linux.
+
+**Notes.**
+
+* `max_rss_mb` is never below about 13 MB, the size of the monitoring process. Linux carries a
+  process's memory peak over into the programs it starts, and GNU `time` shows the same effect.
+* In our tests, sampling once per second added about 5% to the run time of NASTIseq, the
+  step with the most processes to sample. For long runs, `--benchmark-interval 5` reduces this
+  further. `--no-benchmark` turns monitoring off; the pipeline's results are identical either
+  way.
+* StringTie numbers its genes (`STRG.*`) in the order its threads finish, so these IDs can
+  differ between runs when it uses more than one thread. The transcript models themselves are
+  the same.
 
 ## References
 
