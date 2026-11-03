@@ -1028,12 +1028,19 @@ bench "gffcompare against annotation" \
 awk -F'\t' '$4=="x"{split($5,a,"|"); print a[2]}' \
     "$ASSEMBLY/final.tracking" | sort -u > "$TMP/x2.txt"
 
-awk -F'\t' '$4=="x"' "$ASSEMBLY/final.tracking" > "$OUTDIR/NAT_tracking_x.tsv"
+awk -F'\t' '
+NR==FNR {keep[$1]; next}
+$4=="x" {
+    split($5,a,"|")
+    if(a[2] in keep) print
+}' "$TMP/x2.txt" "$ASSEMBLY/orphan.tracking" \
+    > "$OUTDIR/NAT_tracking_x.tsv"
 
 awk -F'\t' '$4=="x"{split($3,a,"|"); sub(/^gene:/,"",a[1]); print a[1]}' \
     "$ASSEMBLY/final.tracking" | sort -u > "$TMP/nat_target_genes.txt"
 
 log "round 2 antisense transcripts: $(wc -l < "$TMP/x2.txt")"
+
 step_end
 
 
