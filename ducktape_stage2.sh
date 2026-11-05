@@ -882,7 +882,7 @@ peaks_one() {
 
     bench "bigWigToBedGraph forward ${sample}" \
         bigWigToBedGraph "$BW_CORR/${sample}.forward.bw" stdout \
-      | awk '$4>1' \
+      | awk '$4>10' \
       | bench "sort peaks forward ${sample}" \
         sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
       | bench "bedtools merge peaks forward ${sample}" bedtools merge -i - \
@@ -890,7 +890,7 @@ peaks_one() {
 
     bench "bigWigToBedGraph reverse ${sample}" \
         bigWigToBedGraph "$BW_CORR/${sample}.reverse.bw" stdout \
-      | awk '$4>1' \
+      | awk '$4>10' \
       | bench "sort peaks reverse ${sample}" \
         sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
       | bench "bedtools merge peaks reverse ${sample}" bedtools merge -i - \
