@@ -505,17 +505,34 @@ fi
 # ----------------------------------------------------------
 
 
+PREGTF="$TMP/pre_reference.gtf"
 GTF="$OUTDIR/reference.gtf"
 
 log "Converting normalized GFF3 to GTF"
 
-bench "gffread GFF3 to GTF" gffread "$ANNOT" -T --keep-genes -o "$GTF" \
+bench "gffread GFF3 to GTF" gffread "$ANNOT" -T --keep-genes -o "$PREGTF" \
     >"$LOGS/gffread_gtf.log" 2>&1 \
     || die "gffread failed building reference GTF"
 
-[[ -s "$GTF" ]] || die "gffread produced an empty GTF"
+[[ -s "$PREGTF" ]] || die "gffread produced an empty GTF"
 
-awk -F '\t' '$9 !~ /gene_id ""/ && $9 ~ /gene_id "[^"]+"/' "$GTF" > "$GTF"
+log "Checking and repairing missing gene IDs"
+
+awk -F '\t' 'BEGIN {OFS="\t"}
+{
+    if ($9 ~ /gene_id ""/) {
+        if (match($9, /transcript_id "[^"]+"/)) {
+            tx = substr($9, RSTART, RLENGTH)
+            sub(/transcript_id "/, "", tx)
+            sub(/"$/, "", tx)
+
+            sub(/gene_id ""/, "gene_id \"" tx "\"", $9)
+        }
+    }
+    print
+}' "$PREGTF" > "$GTF"
+
+[[ -s "$GTF" ]] || die "Failed to produce reference GTF"
 
 log "Converting GTF back to GFF3"
 
