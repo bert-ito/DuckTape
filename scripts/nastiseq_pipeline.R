@@ -511,8 +511,18 @@ cat(sprintf("Exported %d orphans to:\n  %s_orphans.xlsx\n  %s_orphans.bed\n",
 
 cat("\n── Step 10: Exporting knownpairs ────────────────────────────────────────────\n")
 
+# Handle different species-specific knownpairs formats
+kp <- as.matrix(WR_names$knownpairs)
+
+if (ncol(kp) == 4) {
+  kp <- c(paste0(kp[,1], "_", kp[,2]),
+          paste0(kp[,3], "_", kp[,4]))
+} else {
+  kp <- as.vector(kp)
+}
+
 knownpairs <- genepos %>%
-  filter(attributes %in% WR_names$knownpairs) %>%
+  filter(attributes %in% kp) %>%
   select(seqname, start, end, attributes, score, strand)
 
 write.xlsx(knownpairs, paste0(OUT_PREFIX, "_knownpairs.xlsx"), rowNames = FALSE)
