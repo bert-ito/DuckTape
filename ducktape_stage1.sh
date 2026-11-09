@@ -515,6 +515,8 @@ bench "gffread GFF3 to GTF" gffread "$ANNOT" -T --keep-genes -o "$GTF" \
 
 [[ -s "$GTF" ]] || die "gffread produced an empty GTF"
 
+awk -F '\t' '$9 !~ /gene_id ""/ && $9 ~ /gene_id "[^"]+"/' "$GTF" > "$GTF"
+
 log "Converting GTF back to GFF3"
 
 # Without -T, gffread writes GFF3 output.
