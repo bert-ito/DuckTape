@@ -136,7 +136,7 @@ bash ducktape_stage2.sh \
 | `--target-class all\|coding\|noncoding` | `all` | Which target genes to use. |
 | `--orphan-buffer INT` | `10000` | Extension (bp) around each target before the strand is flipped. |
 | `--alpha-factor FLOAT` | `4` | Multiplier applied to the antisense leakage (α) in the coverage correction. |
-| `--intersect-frac FLOAT` | `0.2` | Minimum fraction of a read that must overlap a peak. |
+| `--peak-coverage INT` | `10` | Minimum coverage to retain consensus peak. |
 | `--threads INT` | all available CPUs | Number of CPUs. |
 | `--mem-gb INT` | available memory | Memory budget in GB. |
 | `--env NAME\|PATH` | current environment | Conda environment to activate. |
