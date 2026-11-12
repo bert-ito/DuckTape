@@ -19,7 +19,7 @@ BENCH_T_START=${EPOCHREALTIME:-$(date +%s.%N)}
 
 ORPHAN_BUFFER=10000
 ALPHA_FACTOR=4
-INTERSECT_FRAC=0.2
+PEAK_COVERAGE=10
 TARGET_CLASS="all"
 LIB_TYPE="RF"
 READ_TYPE="PE"
@@ -88,11 +88,10 @@ Optional arguments
   --alpha-factor FLOAT
         Multiplier applied to estimated alpha
         Default: 4
-
-  --intersect-frac FLOAT
-        Minimum fractional overlap between reads and
-        consensus NAT peaks
-        Default: 0.2
+        
+  --peak-coverage INT
+        Minimum coverage to retain consensus peak
+        Default: 10
         
   --mode analysis|test
         analysis: use annotation.gff3 and orphans.bed
@@ -196,7 +195,7 @@ do
         --target-class)     TARGET_CLASS="$2";   shift 2 ;;
         --orphan-buffer)    ORPHAN_BUFFER="$2";  shift 2 ;;
         --alpha-factor)     ALPHA_FACTOR="$2";   shift 2 ;;
-        --intersect-frac)   INTERSECT_FRAC="$2"; shift 2 ;;
+        --peak-coverage)    PEAK_COVERAGE="$2";  shift 2 ;;
         --mode)             MODE="${2,,}"; shift 2 ;;
         --threads)          THREADS_OVERRIDE="$2"; shift 2 ;;
         --mem-gb)           MEM_GB_OVERRIDE="$2";  shift 2 ;;
@@ -259,6 +258,11 @@ step_end() {
 if [[ -z "${STAGE1_DIR:-}" || -z "${BAM_DIR:-}" || -z "${OUTDIR:-}" ]]; then
     echo "ERROR: Missing required arguments"
     usage
+    exit 1
+fi
+
+if ! [[ "$PEAK_COVERAGE" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --peak-coverage must be a non-negative integer."
     exit 1
 fi
 
@@ -561,7 +565,7 @@ printf '  library type    : %s (%s)\n' "$LIB_TYPE" "$READ_TYPE"
 printf '  target class    : %s\n' "$TARGET_CLASS"
 printf '  orphan buffer   : %s bp\n' "$ORPHAN_BUFFER"
 printf '  alpha factor    : %s\n' "$ALPHA_FACTOR"
-printf '  intersect frac  : %s\n' "$INTERSECT_FRAC"
+printf '  peak coverage   : %s\n' "$PEAK_COVERAGE"
 printf '  CPUs            : %d\n' "$THREADS"
 printf '  memory          : %d GB (%d GB usable)\n' \
        $(( MEM_MB / 1024 )) $(( MEM_USABLE_MB / 1024 ))
@@ -593,7 +597,7 @@ export TMP LOGS COUNTS ALPHA_DIR BW BW_CORR PEAKDIR ASSEMBLY
 export ISOLATED_COUNTS TOTAL_ISOLATED_COUNTS NAT_COUNTS CORRELATION
 export REST_BAMS SAMPLE_DIR BAM_DIR OUTDIR
 export FC_SENSE FC_ANTI BW_PLUS BW_MINUS PLUS_EXPR MINUS_EXPR
-export INTERSECT_FRAC ALPHA_FACTOR
+export ALPHA_FACTOR PEAK_COVERAGE
 export ISOLATE TOTAL_ALPHA PEARSON ALPHA REMOVE
 
 bench_init
@@ -882,7 +886,7 @@ peaks_one() {
 
     bench "bigWigToBedGraph forward ${sample}" \
         bigWigToBedGraph "$BW_CORR/${sample}.forward.bw" stdout \
-      | awk '$4>10' \
+      | awk -v coverage="$PEAK_COVERAGE" '$4 > coverage' \
       | bench "sort peaks forward ${sample}" \
         sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
       | bench "bedtools merge peaks forward ${sample}" bedtools merge -i - \
@@ -890,7 +894,7 @@ peaks_one() {
 
     bench "bigWigToBedGraph reverse ${sample}" \
         bigWigToBedGraph "$BW_CORR/${sample}.reverse.bw" stdout \
-      | awk '$4>10' \
+      | awk -v coverage="$PEAK_COVERAGE" '$4 > coverage' \
       | bench "sort peaks reverse ${sample}" \
         sort -k1,1 -k2,2n --parallel="$PEAK_THREADS" -S "${PEAK_SORT_MEM}M" -T "$TMP" \
       | bench "bedtools merge peaks reverse ${sample}" bedtools merge -i - \
@@ -946,10 +950,10 @@ extract_one() {
 
     bench "bedtools intersect plus ${sample}" \
         bedtools intersect -abam "$sd/plus.bam"  -b "$TMP/plus.bed" \
-        -f "$INTERSECT_FRAC" > "$sd/plus_hits.bam"
+        > "$sd/plus_hits.bam"
     bench "bedtools intersect minus ${sample}" \
         bedtools intersect -abam "$sd/minus.bam" -b "$TMP/minus.bed" \
-        -f "$INTERSECT_FRAC" > "$sd/minus_hits.bam"
+        > "$sd/minus_hits.bam"
 
     bench "samtools cat ${sample}" \
         samtools cat -o "$sd/all.bam" "$sd/plus_hits.bam" "$sd/minus_hits.bam"
