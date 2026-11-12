@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Estimate global antisense leakage (p_e) for strand-specific RNA-seq.
+Estimate global antisense leakage (MLE) for strand-specific RNA-seq.
 
 Optimisations over the original:
   * Only Geneid and the count column are parsed. featureCounts stores
