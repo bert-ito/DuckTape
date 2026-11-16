@@ -652,13 +652,31 @@ case "$TARGET_CLASS" in
 esac
 
 awk -F'\t' '
-$3=="gene"{
-    id=""
-    if(match($9,/gene_id=[^;]+/))       id=substr($9,RSTART+8,RLENGTH-8)
-    else if(match($9,/geneID=[^;]+/))   id=substr($9,RSTART+7,RLENGTH-7)
-    else if(match($9,/ID=gene:[^;]+/))  id=substr($9,RSTART+8,RLENGTH-8)
-    else if(match($9,/ID=[^;]+/))       id=substr($9,RSTART+3,RLENGTH-3)
-    if(id!="") print id
+function clean_id(id) {
+    sub(/^ID=/, "", id)
+    sub(/^gene:/, "", id)
+    sub(/^gene-/, "", id)
+    sub(/^gene_/, "", id)
+    sub(/^gene_id[ ="]+/, "", id)
+    sub(/"$/, "", id)
+    return id
+}
+
+$3 == "gene" {
+    id = ""
+
+    if (match($9, /ID=[^;]+/))
+        id = substr($9, RSTART + 3, RLENGTH - 3)
+    else if (match($9, /gene_id "[^"]+"/)) {
+        id = substr($9, RSTART, RLENGTH)
+        sub(/^gene_id "/, "", id)
+        sub(/"$/, "", id)
+    }
+
+    id = clean_id(id)
+
+    if (id != "")
+        print id
 }' "$TARGET_GFF" > "$TMP/target_genes.txt"
 
 awk 'FNR==NR{keep[$1]; next} $4 in keep' \
@@ -680,34 +698,57 @@ awk '
 BEGIN {
     FS = OFS = "\t"
 }
+
+function clean_id(id) {
+    sub(/^gene:/, "", id)
+    sub(/^gene-/, "", id)
+    sub(/^gene_/, "", id)
+    return id
+}
+
 # Read selected orphan gene IDs
 FNR == NR {
-    orphan[$1] = 1
+    orphan[clean_id($1)] = 1
     next
 }
+
 /^#/ {
     print
     next
 }
+
 {
     id = ""
     parent = ""
+
     if (match($9, /ID=[^;]+/))
         id = substr($9, RSTART + 3, RLENGTH - 3)
+
     if (match($9, /Parent=[^;]+/))
         parent = substr($9, RSTART + 7, RLENGTH - 7)
-    # Retain selected gene records
-    if ($3 == "gene") {
-        keep[id] = (id in orphan)
-    }
-    # Retain transcripts belonging to selected genes
-    if ($3 == "transcript" && parent in orphan) {
+
+    id = clean_id(id)
+    parent = clean_id(parent)
+
+    # Selected gene
+    if ($3 == "gene" && id in orphan) {
+        keep_transcript[id] = 0
+        keep_gene[id] = 1
         print
         next
     }
-    # Retain selected gene records
-    if ($3 == "gene" && id in orphan) {
+
+    # Selected transcript
+    if ($3 == "transcript" && parent in orphan) {
+        keep_transcript[id] = 1
         print
+        next
+    }
+
+    # Child features belonging to selected transcripts
+    if (parent in keep_transcript) {
+        print
+        next
     }
 }
 ' "$TMP/orphan_ids.txt" "$TARGET_GFF" > "$TMP/target_orphans.gff3"
