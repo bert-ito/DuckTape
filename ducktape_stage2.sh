@@ -675,19 +675,41 @@ BEGIN{OFS="\t"}
     print
 }' "$TMP/target_orphans.bed" > "$TMP/target_orphans_rev.bed"
 
+
 awk '
-BEGIN{FS=OFS="\t"}
-function get_id(attr){
-    if(match(attr,/gene_id=[^;]+/))  return substr(attr,RSTART+8,RLENGTH-8)
-    if(match(attr,/geneID=[^;]+/))   return substr(attr,RSTART+7,RLENGTH-7)
-    if(match(attr,/ID=gene:[^;]+/))  return substr(attr,RSTART+8,RLENGTH-8)
-    if(match(attr,/ID=[^;]+/))       return substr(attr,RSTART+3,RLENGTH-3)
-    return ""
+BEGIN {
+    FS = OFS = "\t"
 }
-FNR==NR{orphan[$1]; next}
-/^#/{print; next}
-$3=="gene"{ keep=0; if(get_id($9) in orphan) keep=1 }
-keep{print}
+# Read selected orphan gene IDs
+FNR == NR {
+    orphan[$1] = 1
+    next
+}
+/^#/ {
+    print
+    next
+}
+{
+    id = ""
+    parent = ""
+    if (match($9, /ID=[^;]+/))
+        id = substr($9, RSTART + 3, RLENGTH - 3)
+    if (match($9, /Parent=[^;]+/))
+        parent = substr($9, RSTART + 7, RLENGTH - 7)
+    # Retain selected gene records
+    if ($3 == "gene") {
+        keep[id] = (id in orphan)
+    }
+    # Retain transcripts belonging to selected genes
+    if ($3 == "transcript" && parent in orphan) {
+        print
+        next
+    }
+    # Retain selected gene records
+    if ($3 == "gene" && id in orphan) {
+        print
+    }
+}
 ' "$TMP/orphan_ids.txt" "$TARGET_GFF" > "$TMP/target_orphans.gff3"
 
 log "target orphans: $(wc -l < "$TMP/target_orphans.bed")"
