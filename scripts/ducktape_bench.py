@@ -150,18 +150,28 @@ def is_monitor(pid):
         return False
 
 
+
 def read_io(pid):
     """Cumulative I/O counters of a process, including waited-for children."""
     try:
         data = _read(f"/proc/{pid}/io")
     except OSError:
         return None
-    counters = {}
-    for line in data.splitlines():
-        key, _, value = line.partition(b":")
-        counters[key.decode()] = int(value)
-    return [counters.get(key) for key in IO_KEYS]
 
+    counters = {}
+
+    for line in data.splitlines():
+        if not line.strip():
+            continue
+
+        key, sep, value = line.partition(b":")
+
+        if not sep or not value.strip():
+            continue
+
+        counters[key.decode()] = int(value.strip())
+
+    return [counters.get(key) for key in IO_KEYS]
 
 class TreeSampler:
     """Track the peak memory, process and thread counts of a process tree."""
